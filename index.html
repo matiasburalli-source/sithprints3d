@@ -1103,10 +1103,36 @@ tr:hover td{background:var(--gm)}
 <div class="toast" id="tst"></div>
 
 <script>
-// ── URL DEL BACKEND (Google Apps Script) ──────────────────
+// ── BACKEND URL ───────────────────────────────────────────
 var GS_URL = 'https://script.google.com/macros/s/AKfycbyacJIwI8XPd3k887a5ko_2pJtqgz3sUGcnFs9mAJehhwf4a4BrZo4CC4Ly4OHbR9KW/exec';
 
-gsCall('catch', function(e){ if(onError) onError(e); else console.error(e); }, function(){}, function(){});
+// JSONP call - evita CORS con Google Apps Script
+function gsCall(fn, params, onSuccess, onError) {
+  var cbName = 'cb_' + fn.replace(/[^a-z]/gi,'') + '_' + Date.now();
+  var url = GS_URL + '?fn=' + encodeURIComponent(fn) +
+            '&data=' + encodeURIComponent(JSON.stringify(params||{})) +
+            '&callback=' + cbName;
+  window[cbName] = function(data) {
+    try{ delete window[cbName]; }catch(e){}
+    try{ var s=document.getElementById(cbName); if(s) s.parentNode.removeChild(s); }catch(e){}
+    if(onSuccess) onSuccess(data);
+  };
+  var script = document.createElement('script');
+  script.id = cbName;
+  script.onerror = function() {
+    try{ delete window[cbName]; }catch(e){}
+    try{ if(script.parentNode) script.parentNode.removeChild(script); }catch(e){}
+    if(onError) onError(new Error('Error de red'));
+  };
+  script.src = url;
+  document.head.appendChild(script);
+  setTimeout(function(){
+    if(window[cbName]){
+      try{ delete window[cbName]; }catch(e){}
+      try{ var s=document.getElementById(cbName); if(s) s.parentNode.removeChild(s); }catch(e){}
+      if(onError) onError(new Error('Timeout'));
+    }
+  }, 20000);
 }
 
 var prods=[],cart=[],aKey='',pedidos=[],filtroAct='todos',editFila=null,editItems=[],trackFila=null;
@@ -1129,15 +1155,16 @@ window.onload=function(){
 
   // Siempre actualizar desde el servidor en segundo plano
   gsCall('getProductos', {}, function(r){
-    if(r.ok){
-      prods=r.lista; renderProds(prods);
-      try{sessionStorage.setItem('si3d_prods',JSON.stringify(r.lista));}catch(e){}
-    } else if(!prods.length){
-      document.getElementById('lista').innerHTML='<div class="nores">❌ '+(r.msg||'Error')+'</div>';
-    }
-  }, function(){
-    if(!prods.length) document.getElementById('lista').innerHTML='<div class="nores">❌ Error al cargar.</div>';
-  });
+      if(r.ok){
+        prods=r.lista;
+        renderProds(prods);
+        try{ sessionStorage.setItem('si3d_prods', JSON.stringify(r.lista)); }catch(e){}
+      } else if(!prods.length){
+        document.getElementById('lista').innerHTML='<div class="nores">❌ '+r.msg+'</div>';
+      }
+    }, function(){
+      if(!prods.length) document.getElementById('lista').innerHTML='<div class="nores">❌ Error al cargar.</div>';
+    });
 };
 
 var EMOJIS=['🖨️','🎮','🧩','⭐','🔩','🎯','🔷','🌀','💡','🔮'];
@@ -1554,7 +1581,10 @@ function setEstado(fila,estado,btn){
   row.querySelectorAll('.bes').forEach(function(b){b.disabled=true;});
   btn.innerHTML='<span class="sp2"></span>Guardando...';
   var ped=pedidos.find(function(x){return x.fila===fila;});
-  gsCall('cambiarEstado', {fila:fila,estado:estado,p:aKey,email:ped?ped.email:'',nombre:ped?ped.cliente:'',id:ped?ped.id:''}, function(r, function(){row.querySelectorAll('.bes').forEach(function(b){b.disabled=false;});alert('Error.');});
+  gsCall('cambiarEstado', {fila:fila,estado:estado,p:aKey,email:ped?ped.email:'',nombre:ped?ped.cliente:'',id:ped?ped.id:''}, function(r){
+      if(r.ok){var p=pedidos.find(function(x){return x.fila===fila;});if(p)p.estado=estado;renderStats();renderTabla();toast('✅ '+estado);}
+      else{row.querySelectorAll('.bes').forEach(function(b){b.disabled=false;});alert('Error: '+r.msg);}
+    }, function(){row.querySelectorAll('.bes').forEach(function(b){b.disabled=false;});alert('Error.');});
 }
 
 // ── EDICIÓN ──
@@ -1653,7 +1683,8 @@ function confirmarMenuPass(){
   }
   cerrarMenuPass();
   aKey=pass;
-  gsCall('loginAdmin', {p:pass}, function(r){if(r&&r.ok){pedidos=r.pedidos||[];} }, function(){});
+  gsCall('agregarProducto', datos, function(r){if(r&&r.ok){pedidos=r.pedidos||[];} })
+    .loginAdmin({p:pass});
   document.getElementById('hmenu').classList.add('open');
   document.getElementById('hmenu-ov').classList.add('open');
 }
@@ -1707,11 +1738,13 @@ function guardarNuevoProducto(){
     foto:document.getElementById('np-foto').value.trim(),
     categoria:document.getElementById('np-categoria').value
   };
-  gsCall('withSuccessHandler', function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Producto agregado', function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Producto agregado');} }, function(){});
-      } else {alert('Error: '+(r?r.msg:'sin detalle'));}
-    })
-    .withFailureHandler(function(){btn.disabled=false;btn.textContent='Guardar producto';alert('Error de conexión.');})
-    .agregarProducto(datos);
+  gsCall('agregarProducto', datos, function(r){
+    btn.disabled=false; btn.textContent='Guardar producto';
+    if(r&&r.ok){
+      cerrarAgregarProducto();
+      gsCall('getProductos', {}, function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Producto agregado');}});
+    } else {alert('Error: '+(r?r.msg:'sin detalle'));}
+  }, function(){btn.disabled=false;btn.textContent='Guardar producto';alert('Error de conexión.');});
 }
 
 // ── PRECIO POR KG ──
@@ -1755,11 +1788,14 @@ function aplicarPrecioKg(){
   var actualizaciones=conGramos.map(function(p){
     return{id:p.id,precioCosto:Math.round((p.gramos/1000)*precioKg*(1+margen/100))};
   });
-  gsCall('withSuccessHandler', function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Costos actualizados', function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Costos actualizados');} }, function(){});
+  gsCall('actualizarPreciosKg', actualizaciones, function(r){
+      btn.disabled=false;btn.textContent='Actualizar precios';
+      if(r&&r.ok){
+        precioKgActual=precioKg;margenActual=margen;
+        cerrarPrecioPorKg();
+        gsCall('getProductos', {}, function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Costos actualizados');}});
       } else {alert('Error: '+(r?r.msg:'sin detalle'));}
-    })
-    .withFailureHandler(function(){btn.disabled=false;btn.textContent='Actualizar precios';alert('Error de conexión.');})
-    .actualizarPreciosKg(actualizaciones);
+    }, function(){btn.disabled=false;btn.textContent='Actualizar precios';alert('Error de conexión.');});
 }
 
 // ── TIPO CLIENTE / MAYORISTA ──
@@ -1884,26 +1920,27 @@ function calcularCostoTotal(){
 }
 function abrirCostos(){
   // Cargar config guardada
-  gsCall('getConfigCostos', {p:aKey}, function(r){
-    if(r&&r.ok){
-      var c=r.config||{};
-      document.getElementById('cos-kg').value=c['precio_kg_filamento']||'';
-      document.getElementById('cos-luz').value=c['costo_luz_kg']||'';
-      document.getElementById('cos-margen').value=c['margen_pct']||'150';
-      document.getElementById('cos-repos').value=c['repos_pct']||'10';
-      document.getElementById('cos-url').value=c['url_filamento']||'';
-      actualizarFormulaCosto();
-    }
-  });
+  gsCall('guardarConfigCostos', {p:aKey,config:cfg}, function(r){
+      if(r&&r.ok){
+        var c=r.config||{};
+        document.getElementById('cos-kg').value=c['precio_kg_filamento']||'';
+        document.getElementById('cos-luz').value=c['costo_luz_kg']||'';
+        document.getElementById('cos-margen').value=c['margen_pct']||'150';
+        document.getElementById('cos-repos').value=c['repos_pct']||'10';
+        document.getElementById('cos-amort').value=c['amort_pct']||'5';
+        document.getElementById('cos-url').value=c['url_filamento']||'';
+        actualizarFormulaCosto();
+      }
+    }).getConfigCostos({p:aKey});
   document.getElementById('mcostos-ov').classList.add('open');
   // Chequear alerta de precio
   gsCall('getPrecioAlerta', {p:aKey}, function(r){
     if(r&&r.ok&&r.alerta){
       var el=document.getElementById('alerta-precio');
       document.getElementById('alerta-precio-txt').innerHTML=
-        'El precio del filamento cambió: <strong style="color:var(--ro)">$'+
-        Number(r.alerta.anterior).toLocaleString('es-AR')+'</strong> → <strong style="color:var(--ve)">$'+
-        Number(r.alerta.nuevo).toLocaleString('es-AR')+'</strong>. ¿Actualizás los costos?';
+        'El precio del filamento cambió: $'+Number(r.alerta.anterior).toLocaleString('es-AR')+
+        ' → $'+Number(r.alerta.nuevo).toLocaleString('es-AR')+'. ¿Actualizás los costos?';
+      el.classList.add('show');
       document.getElementById('cos-kg').value=r.alerta.nuevo;
       actualizarFormulaCosto();
     }
@@ -1919,6 +1956,7 @@ function actualizarFormulaCosto(){
   var luz=Number(document.getElementById('cos-luz').value)||0;
   var mar=Number(document.getElementById('cos-margen').value)||150;
   var rep=Number(document.getElementById('cos-repos').value)||0;
+  var amo=Number(document.getElementById('cos-amort').value)||0;
   var el=document.getElementById('cos-formula');
   if(!kg){el.innerHTML='Ingresá el precio por kg para ver la fórmula.';return;}
   var ejemplo=50; // gramos de ejemplo
@@ -1951,11 +1989,12 @@ function guardarCostos(){
       precioKgActual=cfg['precio_kg_filamento'];
       luzKgActual=cfg['costo_luz_kg'];
       margenActual=cfg['margen_pct'];
+      reposActual=cfg['repos_pct'];
       amortActual=cfg['amort_pct'];
       cerrarCostos();
       toast('✅ Costos guardados');
     } else {alert('Error: '+(r?r.msg:'sin detalle'));}
-  }, function(){btn.disabled=false;btn.textContent='Guardar';alert('Error de conexión.');});
+    }, function(){btn.disabled=false;btn.textContent='Guardar';alert('Error de conexión.');});
 }
 
 // ── EDITAR PRODUCTO ───────────────────────────────────────
@@ -2008,11 +2047,13 @@ function guardarEditarProducto(){
     categoria:document.getElementById('ep-categoria').value,
     p:aKey
   };
-  gsCall('getProductos', {}, function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Producto actualizado');} }, function(){});
+  gsCall('editarProducto', datos, function(r){
+      btn.disabled=false;btn.textContent='Guardar cambios';
+      if(r&&r.ok){
+        cerrarEditarProducto();
+        gsCall('getProductos', {}, function(r2){if(r2.ok){prods=r2.lista;renderProds(prods);try{sessionStorage.setItem('si3d_prods',JSON.stringify(r2.lista));}catch(e){}toast('✅ Producto actualizado');}});
       } else {alert('Error: '+(r?r.msg:'sin detalle'));}
-    })
-    .withFailureHandler(function(){btn.disabled=false;btn.textContent='Guardar cambios';alert('Error de conexión.');})
-    .editarProducto(datos);
+    }, function(){btn.disabled=false;btn.textContent='Guardar cambios';alert('Error de conexión.');});
 }
 
 // ── FEEDBACK ──────────────────────────────────────────────
