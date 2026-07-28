@@ -1106,21 +1106,27 @@ tr:hover td{background:var(--gm)}
 // ── BACKEND URL ───────────────────────────────────────────
 var GS_URL = 'https://script.google.com/macros/s/AKfycbznD8Zajtb06fZNM1dwLcP5Fm9paVyQWPagFFgE-AZUEvrx-UPRuLteiOh3fsKjMudp/exec';
 
-// Fetch call via proxy de allorigins para evitar CORS
+// Fetch con múltiples proxies de fallback
 function gsCall(fn, params, onSuccess, onError) {
   var gsUrl = GS_URL + '?fn=' + encodeURIComponent(fn) +
               '&data=' + encodeURIComponent(JSON.stringify(params||{}));
-  // allorigins.win actúa como proxy CORS gratuito
-  var proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(gsUrl);
-  fetch(proxyUrl)
+
+  // Intentar fetch directo primero (funciona en algunos navegadores)
+  fetch(gsUrl)
     .then(function(r){ return r.json(); })
-    .then(function(d){
-      var data = JSON.parse(d.contents);
-      if(onSuccess) onSuccess(data);
-    })
-    .catch(function(e){
-      if(onError) onError(e);
-      else console.error('gsCall error:', e);
+    .then(function(data){ if(onSuccess) onSuccess(data); })
+    .catch(function(){
+      // Fallback 1: corsproxy.io
+      fetch('https://corsproxy.io/?' + encodeURIComponent(gsUrl))
+        .then(function(r){ return r.json(); })
+        .then(function(data){ if(onSuccess) onSuccess(data); })
+        .catch(function(){
+          // Fallback 2: allorigins
+          fetch('https://api.allorigins.win/get?url=' + encodeURIComponent(gsUrl))
+            .then(function(r){ return r.json(); })
+            .then(function(d){ if(onSuccess) onSuccess(JSON.parse(d.contents)); })
+            .catch(function(e){ if(onError) onError(e); });
+        });
     });
 }
 
